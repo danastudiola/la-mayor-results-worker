@@ -1,0 +1,15 @@
+name = "la-mayor-results-worker"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Uncomment and set your account_id before deploying:
+# account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+
+[observability]
+enabled = true
+
+# Optional: set a custom route after deploying
+# [[routes]]
+# pattern = "election.yourdomain.com/*"
+# zone_name = "yourdomain.com"
