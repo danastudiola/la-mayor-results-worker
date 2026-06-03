@@ -1,42 +1,29 @@
 /**
- * LA Mayor 2026 — Election Results Cloudflare Worker
- * Proxies LA County Registrar JSON feed to avoid CORS
- * ElectionID: 4338
- * Feed: https://results.lavote.net/electionresults/json?ElectionID=4338
+ * LA Mayor 2026 — Election Results Cloudflare Worker v1.1
+ * Fixes sticky cache: upstream CF cache disabled, ?fresh=1 bypass, TTL 60s
  */
 
 const FEED_URL = 'https://results.lavote.net/electionresults/json?ElectionID=4338';
 const MAYOR_TITLE = 'LOS ANGELES CITY PRIMARY NOMINATING ELECTION Mayor';
-const CACHE_TTL = 120; // seconds — how long to cache upstream response
+const CACHE_TTL = 60;
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // CORS preflight
-    if (request.method === 'OPTIONS') {
-      return corsResponse(null, 204);
-    }
+    if (request.method === 'OPTIONS') return corsResponse(null, 204);
+    if (url.pathname === '/results') return handleResults(request, ctx, url);
+    if (url.pathname === '/mayor')   return handleMayor(request, ctx, url);
 
-    // Route: GET /results — full proxied JSON from lavote.net
-    if (url.pathname === '/results') {
-      return handleResults(request, ctx);
-    }
-
-    // Route: GET /mayor — parsed Mayor race only
-    if (url.pathname === '/mayor') {
-      return handleMayor(request, ctx);
-    }
-
-    // Route: GET / — usage info
     return corsResponse(JSON.stringify({
-      worker: 'LA Mayor 2026 Results Proxy',
+      worker: 'LA Mayor 2026 Results Proxy v1.1',
       endpoints: {
         '/results': 'Full proxied JSON from LA County Registrar (ElectionID 4338)',
-        '/mayor': 'Parsed LA Mayor race — candidates, totals, gap analysis'
+        '/mayor':   'Parsed LA Mayor race — candidates, totals, gap analysis'
       },
       source: FEED_URL,
-      cache_ttl_seconds: CACHE_TTL
+      cache_ttl_seconds: CACHE_TTL,
+      tip: 'Append ?fresh=1 to any endpoint to bypass edge cache'
     }), 200);
   }
 };
@@ -45,26 +32,22 @@ export default {
 // HANDLERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleResults(request, ctx) {
-  const cacheKey = new Request(FEED_URL, request);
+async function handleResults(request, ctx, url) {
+  const bypass = url.searchParams.get('fresh') === '1';
+  const cacheKey = new Request(url.origin + url.pathname, request);
   const cache = caches.default;
 
-  // Check cache first
-  let cached = await cache.match(cacheKey);
-  if (cached) {
-    const body = await cached.text();
-    return corsResponse(body, 200, 'HIT');
+  if (!bypass) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return corsResponse(await cached.text(), 200, 'HIT');
   }
 
-  // Fetch upstream
   const upstream = await fetchUpstream();
   if (!upstream.ok) {
     return corsResponse(JSON.stringify({ error: `Upstream error: ${upstream.status}` }), 502);
   }
 
   const text = await upstream.text();
-
-  // Store in cache
   const toCache = new Response(text, {
     headers: {
       'Content-Type': 'application/json',
@@ -72,18 +55,17 @@ async function handleResults(request, ctx) {
     }
   });
   ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
-
-  return corsResponse(text, 200, 'MISS');
+  return corsResponse(text, 200, bypass ? 'BYPASS' : 'MISS');
 }
 
-async function handleMayor(request, ctx) {
-  const cacheKey = new Request(FEED_URL + '#mayor', request);
+async function handleMayor(request, ctx, url) {
+  const bypass = url.searchParams.get('fresh') === '1';
+  const cacheKey = new Request(url.origin + url.pathname, request);
   const cache = caches.default;
 
-  let cached = await cache.match(cacheKey);
-  if (cached) {
-    const body = await cached.text();
-    return corsResponse(body, 200, 'HIT');
+  if (!bypass) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return corsResponse(await cached.text(), 200, 'HIT');
   }
 
   const upstream = await fetchUpstream();
@@ -93,8 +75,8 @@ async function handleMayor(request, ctx) {
 
   const json = await upstream.json();
   const parsed = parseMayor(json);
-
   const text = JSON.stringify(parsed, null, 2);
+
   const toCache = new Response(text, {
     headers: {
       'Content-Type': 'application/json',
@@ -102,8 +84,7 @@ async function handleMayor(request, ctx) {
     }
   });
   ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
-
-  return corsResponse(text, 200, 'MISS');
+  return corsResponse(text, 200, bypass ? 'BYPASS' : 'MISS');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,10 +111,9 @@ function parseMayor(data) {
   const pratt = withPct.find(c => c.name.includes('PRATT'));
   const raman = withPct.find(c => c.name.includes('RAMAN'));
   const bass  = withPct.find(c => c.name.includes('BASS'));
-  const gap   = pratt.votes - raman.votes;
-  const gapPct = parseFloat((pratt.pct - raman.pct).toFixed(4));
+  const gap     = pratt.votes - raman.votes;
+  const gapPct  = parseFloat((pratt.pct - raman.pct).toFixed(4));
 
-  // Overtake scenarios
   const scenarios = [150000, 200000, 250000, 300000, 350000].map(remaining => {
     const rpShare = remaining * 0.60;
     const ramanNeeded = Math.round((gap + rpShare) / 2);
@@ -168,14 +148,16 @@ function parseMayor(data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchUpstream() {
+  // cf.cacheTtl: 0 + cacheEverything: false forces Cloudflare to always
+  // fetch fresh from lavote.net instead of serving its own edge-cached copy
   return fetch(FEED_URL, {
     headers: {
       'Accept': 'application/json',
-      'User-Agent': 'LA-Election-Worker/1.0'
+      'User-Agent': 'LA-Election-Worker/1.1'
     },
     cf: {
-      cacheTtl: CACHE_TTL,
-      cacheEverything: true
+      cacheTtl: 0,
+      cacheEverything: false
     }
   });
 }
@@ -187,7 +169,8 @@ function corsResponse(body, status, cacheStatus) {
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
-    'X-Worker': 'la-mayor-results'
+    'X-Worker': 'la-mayor-results',
+    'Cache-Control': 'no-store'
   };
   if (cacheStatus) headers['X-Cache'] = cacheStatus;
   return new Response(body, { status, headers });
