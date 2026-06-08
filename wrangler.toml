@@ -3,20 +3,13 @@ main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# Uncomment and set your account_id before deploying:
 # account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
 
 [observability]
 enabled = true
 
-# KV namespace for vote snapshot history
-# Create in Cloudflare dashboard: Workers & Pages → KV → Create namespace → "LA_MAYOR_SNAPSHOTS"
-# Then replace YOUR_KV_NAMESPACE_ID below with the namespace ID
-[[kv_namespaces]]
-binding = "SNAPSHOTS"
-id      = "YOUR_KV_NAMESPACE_ID"
-
-# Optional: set a custom route after deploying
-# [[routes]]
-# pattern = "election.yourdomain.com/*"
-# zone_name = "yourdomain.com"
+# KV snapshot history is optional — worker runs without it.
+# To enable persistent history, create a KV namespace in Cloudflare and uncomment:
+# [[kv_namespaces]]
+# binding = "SNAPSHOTS"
+# id      = "YOUR_KV_NAMESPACE_ID"
